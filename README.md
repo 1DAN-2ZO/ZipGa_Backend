@@ -57,6 +57,91 @@ supabase db push --dry-run   # 미리보기만
 
 새 마이그레이션을 추가할 땐 반드시 `supabase migration new <설명>`으로 파일을 만들고, **대시보드에서 직접 스키마를 바꾸지 않는다.**
 
+## 프론트엔드 연동 (supabase-js)
+
+```ts
+import { createClient } from '@supabase/supabase-js'
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+// 앱 최초 실행 시 1회 — 익명 로그인 (이후 모든 RPC는 이 세션으로 호출된다)
+await supabase.auth.signInAnonymously()
+
+// 접속 시 1회 — 서버-폰 시계 오차 보정
+const { data: serverNow } = await supabase.rpc('server_now')
+const clockOffsetMs = new Date(serverNow).getTime() - Date.now()
+
+// 방 만들기
+const { data: room } = await supabase.rpc('create_room', { p_nickname: '덕현' })
+// room[0] → { room_id, room_code, player_id }
+
+// QR 스캔 입장
+const { data: joined } = await supabase.rpc('join_room', {
+  p_code: room[0].room_code,
+  p_nickname: '철수',
+})
+// joined[0] → { room_id, player_id }
+
+// 방장이 세션 시작
+const { data: session, error } = await supabase.rpc('start_session')
+if (error) {
+  // error.message가 'NOT_HOST'처럼 코드 그대로 온다 (Postgres 접두사 P0001: 은 없음)
+  handleRpcError(error.message)
+}
+// session[0] → { session_id, seed, starts_at }
+// seed에서 게임 3개 + 각 판 시드를 클라이언트가 직접 파생시킨다 (서버는 추가로 보내지 않음)
+
+// 점수 제출
+await supabase.rpc('submit_score', {
+  p_session_id: session[0].session_id,
+  p_round_index: 0,
+  p_normalized: 87.5,
+  p_raw_score: 18,
+  p_tiebreak_ms: 24310,
+  p_finished: true,
+})
+
+// 종합 판정 — 방 멤버 누구나 호출 가능, 먼저 도착한 한 번만 실제로 실행된다
+const { data: result } = await supabase.rpc('end_session', {
+  p_session_id: session[0].session_id,
+})
+// result → [{ player_id, nickname, avg_score, penalized }, ...]
+// penalized === true인 사람은 이 호출 안에서 이미 방에서 제거된 상태다
+
+// 집에 갈래 — 응답을 받은 뒤에 카카오T 딥링크를 연다 (순서를 지킬 것, §6.2)
+await supabase.rpc('leave_room')
+```
+
+### Realtime 구독
+
+입장 직후부터 자기 방의 변경만 받는다 (RLS가 Postgres Changes에도 그대로 적용됨).
+
+```ts
+supabase
+  .channel(`room:${roomCode}`)
+  .on('postgres_changes',
+    { event: 'INSERT', schema: 'public', table: 'sessions', filter: `room_id=eq.${roomId}` },
+    ({ new: s }) => { /* 세션 시작 신호 — s.starts_at까지 카운트다운 */ }
+  )
+  .on('postgres_changes',
+    { event: 'UPDATE', schema: 'public', table: 'sessions', filter: `room_id=eq.${roomId}` },
+    ({ new: s }) => { /* s.ended_at이 채워짐 — end_session 결과를 화면에 반영 */ }
+  )
+  .on('postgres_changes',
+    { event: '*', schema: 'public', table: 'players', filter: `room_id=eq.${roomId}` },
+    ({ new: p }) => { /* 입장/퇴장 — p.left_at 변화로 판정 */ }
+  )
+  .on('postgres_changes',
+    { event: 'INSERT', schema: 'public', table: 'scores', filter: `session_id=eq.${sessionId}` },
+    ({ new: s }) => { /* 다른 플레이어의 점수 제출 현황 */ }
+  )
+  .subscribe()
+```
+
+로비 참가자 목록은 별도 **Presence** 채널로 관리한다. Presence는 절전·순단에 취약하므로 **방의 생사 판정에는 쓰지 않는다** — 그 기준은 오직 `rooms.expires_at`이다 (§7).
+
+에러 코드 전체 목록은 [`mdfile/백엔드_Supabase명세.md`](mdfile/백엔드_Supabase명세.md) §9 참고.
+
 ## 알려진 제약
 
 - `join_room` / `rejoin_room`의 만료 방 지연 삭제는 예외 발생 시 트랜잭션이 롤백돼 실제로 삭제가 커밋되지 않는다. 설계상 허용된 트레이드오프(§6.2)이며, 필요해지면 `pg_cron`으로 별도 정리한다.
