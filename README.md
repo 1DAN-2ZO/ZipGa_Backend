@@ -31,6 +31,7 @@ RLS: 클라이언트는 **자기가 속한 방만 읽기** 가능. 쓰기는 전
 | `end_session(session_id)` | 종합 판정 — 평균 `normalizedScore < 40`인 인원을 같은 트랜잭션에서 강퇴 |
 | `leave_room()` | "집에 갈래" 자발적 귀가 |
 | `set_session_period(minutes)` | 방장의 세션 주기 설정 (30/45/60) |
+| `server_now()` | 서버 시각 반환 — 클라이언트가 폰 시계와의 오차를 보정할 때 접속 시 1회 호출 |
 
 내부 헬퍼(`gen_room_code`, `_ensure_host`, `_remove_player`)는 클라이언트가 직접 호출할 수 없도록 `EXECUTE` 권한을 차단해뒀다.
 
@@ -43,6 +44,7 @@ RLS: 클라이언트는 **자기가 속한 방만 읽기** 가능. 쓰기는 전
 3. `rpc` — §5 RPC 8개 + 내부 헬퍼 3개
 4. `realtime` — §7 Realtime publication
 5~8. 검증 과정에서 발견한 버그 수정 (함수 실행 권한 누락, `search_path` 미고정, `RETURNS TABLE` 출력 컬럼명과 본문 변수명 충돌)
+9. `add_server_now` — 클라이언트 시계 보정용 `server_now()` 추가
 
 ### 로컬 개발 환경 세팅
 
